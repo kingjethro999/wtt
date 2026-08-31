@@ -9,6 +9,9 @@ import os
 import re
 import json
 import subprocess
+import http.server
+import socketserver
+import webbrowser
 from urllib.parse import urlparse, urljoin
 import requests
 from bs4 import BeautifulSoup
@@ -38,8 +41,7 @@ class OpenAPIParser:
     def extract_spec(cls, url: str, session: requests.Session) -> tuple[dict | None, str | None]:
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
-        
-        # 1. Try swagger-ui-init.js relative to path or root
+
         init_js_candidates = [
             urljoin(url, "swagger-ui-init.js"),
             urljoin(base_url + parsed.path.rstrip('/') + '/', "swagger-ui-init.js"),
@@ -57,13 +59,11 @@ class OpenAPIParser:
             except Exception:
                 pass
 
-        # 2. Try fetching HTML page to check for inline scripts or JSON links
         try:
             r = session.get(url, timeout=8)
             if r.status_code == 200:
                 html = r.text
 
-                # Check inline script regex for spec object or url
                 spec_url_match = re.search(r'url\s*:\s*["\']([^"\']+\.json[^"\']*)["\']', html, re.I)
                 if spec_url_match:
                     target = urljoin(url, spec_url_match.group(1))
@@ -71,7 +71,6 @@ class OpenAPIParser:
                     if spec:
                         return spec, target
 
-                # Check for swagger-ui-init in html
                 if "swagger-ui-init.js" in html:
                     init_target = urljoin(url, "swagger-ui-init.js")
                     r_init = session.get(init_target, timeout=8)
@@ -82,7 +81,6 @@ class OpenAPIParser:
         except Exception:
             pass
 
-        # 3. Direct spec probes
         probes = [
             urljoin(url, "swagger.json"),
             urljoin(url, "openapi.json"),
@@ -200,20 +198,19 @@ class WebPageFetcher:
 
     @staticmethod
     def fetch_with_playwright(url: str) -> tuple[str, str]:
-        """Use Playwright Chromium to render full JavaScript DOM."""
         try:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(1500) # Give extra time for hydration
+                page.wait_for_timeout(1500)
                 title = page.title()
                 html_content = page.content()
                 browser.close()
                 return html_content, title
         except Exception as e:
-            print(f"⚠️ Playwright rendering fallback notice: {e}", file=sys.stderr)
+            print(f"⚠️ Playwright notice: {e}", file=sys.stderr)
             return "", ""
 
     @classmethod
@@ -230,7 +227,6 @@ class WebPageFetcher:
             r.raise_for_status()
             html_content = r.text
 
-            # Check if page is an SPA shell requiring JS
             is_spa_shell = ("<div id=\"root\"></div>" in html_content or 
                             "<div id=\"app\"></div>" in html_content or 
                             "<div id=\"__next\"></div>" in html_content and len(html_content) < 3000)
@@ -247,20 +243,17 @@ class WebPageFetcher:
         if not title:
             title = soup.title.string.strip() if soup.title and soup.title.string else url
 
-        # Meta description
         meta_desc = ""
         desc_tag = soup.find('meta', attrs={'name': 'description'}) or soup.find('meta', attrs={'property': 'og:description'})
         if desc_tag and desc_tag.get('content'):
             meta_desc = desc_tag['content'].strip()
 
-        # Headings
         headings = []
         for h in soup.find_all(['h1', 'h2', 'h3', 'h4']):
             text = h.get_text().strip()
             if text:
                 headings.append({'level': h.name, 'text': text})
 
-        # Links
         links = []
         for a in soup.find_all('a', href=True):
             link_text = a.get_text().strip()
@@ -268,22 +261,18 @@ class WebPageFetcher:
             if link_text and href.startswith(('http://', 'https://')):
                 links.append({'text': link_text, 'href': href})
 
-        # Clean HTML output (prettified)
         prettified_html = soup.prettify()
 
-        # Remove script/style for text extraction
         soup_copy = BeautifulSoup(html_content, 'html.parser')
         for elem in soup_copy(['script', 'style', 'nav', 'footer', 'svg', 'noscript']):
             elem.decompose()
 
-        # HTML to markdown
         h2t = html2text.HTML2Text()
         h2t.ignore_links = False
         h2t.ignore_images = True
         h2t.body_width = 0
         markdown_content = h2t.handle(str(soup_copy))
 
-        # Clean text
         clean_text = soup_copy.get_text(separator='\n').strip()
         clean_lines = [line.strip() for line in clean_text.splitlines() if line.strip()]
         clean_text = '\n'.join(clean_lines)
@@ -374,11 +363,181 @@ def format_swagger_to_markdown(spec: dict, target_op: dict | None, source_url: s
     return '\n'.join(lines)
 
 
+def convert_url(url: str, fmt: str = "md", target_path: str = ".", force_js: bool = False) -> tuple[str, str, float]:
+    """Converts URL and saves file. Returns: (final_file_path, content_preview, file_size_kb)"""
+    session = requests.Session()
+    session.headers.update(DEFAULT_HEADERS)
+
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+
+    parsed_url = urlparse(url)
+    fragment = parsed_url.fragment
+
+    print(f"🌐 [wtt] Fetching URL: {url}")
+
+    spec, spec_url = OpenAPIParser.extract_spec(url, session)
+
+    if spec:
+        print(f"⚡ [wtt] Detected OpenAPI/Swagger spec at: {spec_url or url}")
+        target_op = OpenAPIParser.match_fragment(spec, fragment)
+        if target_op:
+            print(f"🎯 [wtt] Matched operation: {target_op['method']} {target_op['path']}")
+
+        if fmt == "json":
+            out_data = {
+                "source_url": url,
+                "spec_url": spec_url,
+                "targeted_operation": target_op,
+                "info": spec.get("info", {}),
+                "spec": spec
+            }
+            content = json.dumps(out_data, indent=2)
+            default_ext = ".json"
+        elif fmt == "txt":
+            md = format_swagger_to_markdown(spec, target_op, url)
+            content = re.sub(r'[#*`|_~-]', '', md)
+            default_ext = ".txt"
+        elif fmt == "html":
+            md = format_swagger_to_markdown(spec, target_op, url)
+            content = f"<!DOCTYPE html><html><head><title>{spec.get('info', {}).get('title', 'API Docs')}</title><style>body{{font-family:sans-serif;line-height:1.6;max-width:900px;margin:2rem auto;padding:0 1rem;}}pre{{background:#f4f4f4;padding:1rem;border-radius:6px;overflow-x:auto;}}table{{border-collapse:collapse;width:100%;}}th,td{{border:1px solid #ddd;padding:8px;text-align:left;}}th{{background-f4f4f4;}}</style></head><body><pre>{md}</pre></body></html>"
+            default_ext = ".html"
+        else: # md
+            content = format_swagger_to_markdown(spec, target_op, url)
+            default_ext = ".md"
+
+        slug = ""
+        if target_op:
+            clean_op = target_op['path'].strip('/').replace('/', '_')
+            slug = f"{target_op['method'].lower()}_{clean_op}"
+        else:
+            slug = parsed_url.netloc.replace('.', '_') + (parsed_url.path.strip('/').replace('/', '_') or "_swagger")
+
+    else:
+        print(f"📄 [wtt] Processing web page content...")
+        page_data = WebPageFetcher.fetch_page(url, session, force_js=force_js)
+
+        slug = page_data['title'].lower()
+        slug = re.sub(r'[^a-z0-9]+', '_', slug).strip('_')[:50] or "webpage"
+
+        if fmt == "json":
+            content = json.dumps(page_data, indent=2)
+            default_ext = ".json"
+        elif fmt == "txt":
+            content = f"Title: {page_data['title']}\nURL: {page_data['url']}\n\n{page_data['clean_text']}"
+            default_ext = ".txt"
+        elif fmt == "html":
+            content = page_data['html']
+            default_ext = ".html"
+        else: # md
+            content = f"# {page_data['title']}\n\nURL: {page_data['url']}\n\n{page_data['markdown']}"
+            default_ext = ".md"
+
+    # Save logic
+    if os.path.isdir(target_path) or not os.path.splitext(target_path)[1]:
+        os.makedirs(target_path, exist_ok=True)
+        filename = f"{slug}{default_ext}"
+        final_file_path = os.path.join(target_path, filename)
+    else:
+        parent_dir = os.path.dirname(target_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        final_file_path = target_path
+
+    with open(final_file_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    file_size_kb = os.path.getsize(final_file_path) / 1024.0
+    preview = content[:2000] + ("\n... [truncated]" if len(content) > 2000 else "")
+    return os.path.abspath(final_file_path), preview, round(file_size_kb, 2)
+
+
+def start_web_server(port=7860):
+    class WttWebHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path in ["/", "/index.html"]:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                web_ui_path = os.path.join(os.path.dirname(__file__), "web_ui.html")
+                if os.path.exists(web_ui_path):
+                    with open(web_ui_path, "rb") as f:
+                        self.wfile.write(f.read())
+                else:
+                    self.wfile.write(b"<h1>web_ui.html missing</h1>")
+            else:
+                self.send_error(404, "Not Found")
+
+        def do_POST(self):
+            if self.path == "/api/convert":
+                content_length = int(self.headers.get("Content-Length", 0))
+                body_bytes = self.rfile.read(content_length)
+                try:
+                    data = json.loads(body_bytes.decode("utf-8"))
+                    url = data.get("url")
+                    fmt = data.get("format", "md")
+                    target_path = data.get("path", ".")
+                    force_js = data.get("force_js", False)
+
+                    final_path, preview, size_kb = convert_url(url, fmt, target_path, force_js)
+
+                    res_payload = json.dumps({
+                        "success": True,
+                        "file_path": final_path,
+                        "preview": preview,
+                        "size_kb": size_kb
+                    })
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(res_payload.encode("utf-8"))
+                except Exception as e:
+                    res_payload = json.dumps({"success": False, "error": str(e)})
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(res_payload.encode("utf-8"))
+            else:
+                self.send_error(404, "Not Found")
+
+        def log_message(self, format, *args):
+            pass
+
+    server_address = ("", port)
+    try:
+        httpd = socketserver.TCPServer(server_address, WttWebHandler)
+    except OSError:
+        port += 1
+        httpd = socketserver.TCPServer(("", port), WttWebHandler)
+
+    server_url = f"http://localhost:{port}"
+    print(f"\n🌐 [wtt web] Web UI server running at: {server_url}")
+    print("✨ Opening Web UI in your browser... (Press Ctrl+C to stop server)\n")
+
+    try:
+        webbrowser.open(server_url)
+    except Exception:
+        pass
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n🛑 Shutting down wtt Web Server...")
+        httpd.server_close()
+        sys.exit(0)
+
+
 def parse_args():
     raw_args = sys.argv[1:]
 
+    # Web UI mode
+    if any(arg.lower() in ["web", "--web", "-w"] for arg in raw_args):
+        start_web_server()
+        sys.exit(0)
+
     if "--help" in raw_args or ("-h" in raw_args and not any(a.lower() in ["--html", "html"] for a in raw_args)):
         print("Usage: wtt <url> [format_flag: --json|--md|--txt|--html] [path] [--js]")
+        print("Or run 'wtt web' to launch Web UI mode in browser.")
         print("Or run 'wtt' without arguments for interactive CLI mode.\n")
         print("Formats:")
         print("  --json, -j    Structured JSON representation")
@@ -387,15 +546,13 @@ def parse_args():
         print("  --html, -h    Full HTML document (ideal for cloning sites/portfolios)")
         print("Flags:")
         print("  --js          Force Playwright Headless Chromium JS rendering")
+        print("  web, --web    Launch local Web UI server")
         print("\nExamples:")
-        print('  wtt')
-        print('  wtt "https://mc-backend-dev.wittytech.io/swagger-docs/"')
-        print('  wtt "https://mc-backend-dev.wittytech.io/swagger-docs/#/Accounts/post_api_v1_accounts_activation_payment" --json')
+        print('  wtt web')
+        print('  wtt "https://api.example.com/swagger-docs/"')
         print('  wtt "https://king-jethro-developer-portfolio-39bdp8.v2.appdeploy.ai" --html')
-        print('  wtt "https://d-a-r-k.vercel.app/" --html /home/king/Pictures/wtt')
         sys.exit(0)
 
-    # Interactive mode if no arguments provided
     if not raw_args:
         print("⚡ Welcome to wtt Interactive CLI")
         print("---------------------------------------------")
@@ -459,97 +616,8 @@ def parse_args():
 
 def main():
     url, fmt, target_path, force_js = parse_args()
-
-    session = requests.Session()
-    session.headers.update(DEFAULT_HEADERS)
-
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-
-    parsed_url = urlparse(url)
-    fragment = parsed_url.fragment
-
-    print(f"🌐 [wtt] Fetching URL: {url}")
-
-    # Check if Swagger/OpenAPI
-    spec, spec_url = OpenAPIParser.extract_spec(url, session)
-
-    if spec:
-        print(f"⚡ [wtt] Detected OpenAPI/Swagger spec at: {spec_url or url}")
-        target_op = OpenAPIParser.match_fragment(spec, fragment)
-        if target_op:
-            print(f"🎯 [wtt] Matched operation: {target_op['method']} {target_op['path']}")
-
-        if fmt == "json":
-            out_data = {
-                "source_url": url,
-                "spec_url": spec_url,
-                "targeted_operation": target_op,
-                "info": spec.get("info", {}),
-                "spec": spec
-            }
-            content = json.dumps(out_data, indent=2)
-            default_ext = ".json"
-        elif fmt == "txt":
-            md = format_swagger_to_markdown(spec, target_op, url)
-            content = re.sub(r'[#*`|_~-]', '', md)
-            default_ext = ".txt"
-        elif fmt == "html":
-            md = format_swagger_to_markdown(spec, target_op, url)
-            content = f"<!DOCTYPE html><html><head><title>{spec.get('info', {}).get('title', 'API Docs')}</title><style>body{{font-family:sans-serif;line-height:1.6;max-width:900px;margin:2rem auto;padding:0 1rem;}}pre{{background:#f4f4f4;padding:1rem;border-radius:6px;overflow-x:auto;}}table{{border-collapse:collapse;width:100%;}}th,td{{border:1px solid #ddd;padding:8px;text-align:left;}}th{{background-f4f4f4;}}</style></head><body><pre>{md}</pre></body></html>"
-            default_ext = ".html"
-        else: # md
-            content = format_swagger_to_markdown(spec, target_op, url)
-            default_ext = ".md"
-
-        slug = ""
-        if target_op:
-            clean_op = target_op['path'].strip('/').replace('/', '_')
-            slug = f"{target_op['method'].lower()}_{clean_op}"
-        else:
-            slug = parsed_url.netloc.replace('.', '_') + (parsed_url.path.strip('/').replace('/', '_') or "_swagger")
-
-    else:
-        # Standard web page / SPA
-        print(f"📄 [wtt] Processing web page content...")
-        try:
-            page_data = WebPageFetcher.fetch_page(url, session, force_js=force_js)
-        except Exception as e:
-            print(f"❌ Error fetching page: {e}", file=sys.stderr)
-            sys.exit(1)
-
-        slug = page_data['title'].lower()
-        slug = re.sub(r'[^a-z0-9]+', '_', slug).strip('_')[:50] or "webpage"
-
-        if fmt == "json":
-            content = json.dumps(page_data, indent=2)
-            default_ext = ".json"
-        elif fmt == "txt":
-            content = f"Title: {page_data['title']}\nURL: {page_data['url']}\n\n{page_data['clean_text']}"
-            default_ext = ".txt"
-        elif fmt == "html":
-            content = page_data['html']
-            default_ext = ".html"
-        else: # md
-            content = f"# {page_data['title']}\n\nURL: {page_data['url']}\n\n{page_data['markdown']}"
-            default_ext = ".md"
-
-    # Save logic
-    if os.path.isdir(target_path) or not os.path.splitext(target_path)[1]:
-        os.makedirs(target_path, exist_ok=True)
-        filename = f"{slug}{default_ext}"
-        final_file_path = os.path.join(target_path, filename)
-    else:
-        parent_dir = os.path.dirname(target_path)
-        if parent_dir:
-            os.makedirs(parent_dir, exist_ok=True)
-        final_file_path = target_path
-
-    with open(final_file_path, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    file_size_kb = os.path.getsize(final_file_path) / 1024.0
-    print(f"✅ [wtt] Successfully written ({file_size_kb:.2f} KB) -> {os.path.abspath(final_file_path)}")
+    final_path, preview, size_kb = convert_url(url, fmt, target_path, force_js)
+    print(f"✅ [wtt] Successfully written ({size_kb:.2f} KB) -> {final_path}")
 
 
 if __name__ == "__main__":
