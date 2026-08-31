@@ -8,6 +8,7 @@ __pycache__/
 !README.md
 !requirements.txt
 !install.sh
+!web_ui.html
 !wtt
 !wtt.py
 !LICENSE
