@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.json
+*.html
+*.txt
+!README.md
+!requirements.txt
+!install.sh
+!wtt
+!wtt.py
+!LICENSE
