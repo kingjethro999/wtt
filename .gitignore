@@ -9,6 +9,8 @@ __pycache__/
 !requirements.txt
 !install.sh
 !web_ui.html
+!wtt_core/
+!fonts/
 !wtt
 !wtt.py
 !LICENSE

@@ -4,7 +4,6 @@ html2text>=2024.2.26
 playwright>=1.40.0
 urllib3>=2.0.0
 
-
 The exact filenames for Amazon's TrueType fonts vary by weight and style. Amazon uses AmazonEmber_Rg.ttf for its primary brand font and Bookerly-Regular.ttf for its reading serif font. [1, 2] 
 The exact .ttf filename extensions across their complete font packages map to these primary weights:
 Amazon Ember (UI & Brand Font)
@@ -40,3 +39,5 @@ Let me know how you would like to proceed!
 [3] https://www.cdnfonts.com
 [4] https://developer.amazon.com
 [5] https://github.com
+
+use icons bro, or download svgs, they are open icons cdns out there

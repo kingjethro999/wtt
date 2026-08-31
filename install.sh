@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🚀 Installing wtt (Web To Text / Web To HTML CLI)..."
+echo "🚀 Installing wtt (Web To Text / Web To HTML CLI & Web UI)..."
 
 INSTALL_DIR="$HOME/.wtt"
 BIN_DIR="$HOME/.local/bin"
@@ -25,9 +25,18 @@ python3 -m venv "$INSTALL_DIR/.venv"
 echo "🎭 Installing Playwright Chromium browser..."
 "$INSTALL_DIR/.venv/bin/playwright" install chromium
 
+echo "🔤 Ensuring local TTF font assets are ready..."
+mkdir -p "$INSTALL_DIR/fonts"
+if [ ! -f "$INSTALL_DIR/fonts/AmazonEmber_Rg.ttf" ]; then
+    curl -sSL -o "$INSTALL_DIR/fonts/AmazonEmber_Rg.ttf" "https://cdn.jsdelivr.net/fontsource/fonts/outfit@latest/latin-400-normal.ttf"
+fi
+if [ ! -f "$INSTALL_DIR/fonts/Bookerly-Regular.ttf" ]; then
+    curl -sSL -o "$INSTALL_DIR/fonts/Bookerly-Regular.ttf" "https://cdn.jsdelivr.net/fontsource/fonts/inter@latest/latin-400-normal.ttf"
+fi
+
 echo "🔗 Linking binary to $BIN_DIR/wtt..."
 chmod +x "$INSTALL_DIR/wtt" "$INSTALL_DIR/wtt.py"
 ln -sf "$INSTALL_DIR/wtt" "$BIN_DIR/wtt"
 
 echo "✅ wtt installation complete!"
-echo "Run 'wtt --help' to get started."
+echo "Run 'wtt --help' or 'wtt web' to get started."
