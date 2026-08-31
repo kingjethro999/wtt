@@ -376,8 +376,10 @@ def format_swagger_to_markdown(spec: dict, target_op: dict | None, source_url: s
 
 def parse_args():
     raw_args = sys.argv[1:]
-    if not raw_args or "-h" in raw_args or "--help" in raw_args:
+
+    if "--help" in raw_args or ("-h" in raw_args and not any(a.lower() in ["--html", "html"] for a in raw_args)):
         print("Usage: wtt <url> [format_flag: --json|--md|--txt|--html] [path] [--js]")
+        print("Or run 'wtt' without arguments for interactive CLI mode.\n")
         print("Formats:")
         print("  --json, -j    Structured JSON representation")
         print("  --md,   -m    Markdown document (default)")
@@ -386,11 +388,40 @@ def parse_args():
         print("Flags:")
         print("  --js          Force Playwright Headless Chromium JS rendering")
         print("\nExamples:")
+        print('  wtt')
         print('  wtt "https://mc-backend-dev.wittytech.io/swagger-docs/"')
         print('  wtt "https://mc-backend-dev.wittytech.io/swagger-docs/#/Accounts/post_api_v1_accounts_activation_payment" --json')
         print('  wtt "https://king-jethro-developer-portfolio-39bdp8.v2.appdeploy.ai" --html')
         print('  wtt "https://d-a-r-k.vercel.app/" --html /home/king/Pictures/wtt')
         sys.exit(0)
+
+    # Interactive mode if no arguments provided
+    if not raw_args:
+        print("⚡ Welcome to wtt Interactive CLI")
+        print("---------------------------------------------")
+        try:
+            url = input("🌐 Enter URL: ").strip()
+            while not url:
+                print("❌ URL cannot be empty.", file=sys.stderr)
+                url = input("🌐 Enter URL: ").strip()
+
+            fmt_input = input("🎨 Format (--md, --json, --txt, --html) [default: --md]: ").strip().lower()
+            fmt = "md"
+            if "json" in fmt_input or fmt_input == "-j":
+                fmt = "json"
+            elif "html" in fmt_input or fmt_input in ["-html", "html"]:
+                fmt = "html"
+            elif "txt" in fmt_input or fmt_input == "-t":
+                fmt = "txt"
+
+            cwd = os.getcwd()
+            path_input = input(f"📂 Output path (hit Enter to use current dir [{cwd}]): ").strip()
+            target_path = path_input if path_input else "."
+
+            return url, fmt, target_path, False
+        except (KeyboardInterrupt, EOFError):
+            print("\nOperation cancelled.")
+            sys.exit(0)
 
     url = None
     fmt = "md"

@@ -30,8 +30,21 @@ curl -fsSL https://raw.githubusercontent.com/kingjethro999/wtt/main/install.sh |
 
 ## 🚀 Usage & Examples
 
-### 1. Swagger / OpenAPI Endpoint Extraction (JSON)
+### Interactive Mode (No Arguments)
+Simply type `wtt` in your terminal to launch the interactive setup wizard:
+```bash
+wtt
+```
+You will be prompted for:
+1. 🌐 **URL**
+2. 🎨 **Format** (`--md`, `--json`, `--txt`, `--html`) [default: `--md`]
+3. 📂 **Output path** (Hit Enter for current directory)
 
+---
+
+### One-Shot CLI Commands
+
+#### 1. Swagger / OpenAPI Endpoint Extraction (JSON)
 ```bash
 wtt "https://mc-backend-dev.wittytech.io/swagger-docs/#/Accounts/post_api_v1_accounts_activation_payment" --json /home/king/Documents/simulate
 ```
